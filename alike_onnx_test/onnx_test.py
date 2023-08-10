@@ -10,8 +10,9 @@ from copy import deepcopy
 import cv2
 import numpy as np
 import torch
+import torch.nn.functional as F
 
-from alike_onnx_test.onnxmodel import ONNXModel
+from onnxmodel import ONNXModel
 from soft_detect import DKD
 
 class ImageLoader(object):
@@ -36,7 +37,7 @@ class ImageLoader(object):
 def mnn_mather(desc1, desc2):
     sim = desc1 @ desc2.transpose()
     sim[sim < 0.75] = 0
-    nn12 = np.argmax(sim, axis=1)
+    nn12 = np.argmax(sim, axis=1) #函数：numpy.argmax(array, axis) array：代表输入数组；axis：代表对array取行（axis=0）或列（axis=1）的最大值
     nn21 = np.argmax(sim, axis=0)
     ids1 = np.arange(0, sim.shape[0])
     mask = (ids1 == nn21[nn12])
@@ -55,11 +56,14 @@ def plot_keypoints(image, kpts, scores, radius=2, color=(0, 0, 255)):
     kpts = np.round(kpts).astype(int)
 
     i = 0
+    greeni = 0
     for kpt in kpts:
         x0, y0 = kpt
         scores_1 = scores[i]
-        scores_1 = min(1,scores_1 + 0.2)
         i += 1
+        if scores_1 >= 0.35:
+            greeni += 1
+        scores_1 = min(1,scores_1 + 0.2)
         color = list(color)
         color[0] = 0
         color[1] = scores_1 * 255
@@ -67,25 +71,8 @@ def plot_keypoints(image, kpts, scores, radius=2, color=(0, 0, 255)):
         color = tuple(color)
         cv2.circle(out, (x0, y0), radius, color, -1, lineType=cv2.LINE_4)
 
-    return out
+    return out, greeni
 
-def plot_keypoints1(image, kpts, radius, color,scores):
-    kpts = np.round(kpts).astype(int)
-    i = 0
-    for kpt in kpts:
-
-        x0, y0 = kpt
-        scores_1 = scores[i]
-        scores_1 = min(1,scores_1 + 0.2)
-        i += 1
-        color = list(color)
-        color[0] = 0
-        color[1] = scores_1 * 255
-        color[2] = (-scores_1 + 1) * 255
-        color = tuple(color)
-        cv2.circle(image, (x0, y0), radius, color, -1, lineType=cv2.LINE_4)
-
-    return image,kpts.shape[0]
 
 def plot_matches(img_name,
                  image0,
@@ -99,8 +86,8 @@ def plot_matches(img_name,
                  radius=1,
                  color=(0, 255, 0)):
 
-    out0 = plot_keypoints(image0, kpts0, scores1, radius, color)
-    out1 = plot_keypoints(image1, kpts1, scores2, radius, color)
+    out0, green1 = plot_keypoints(image0, kpts0, scores1, radius, color)
+    out1, green2 = plot_keypoints(image1, kpts1, scores2, radius, color)
 
     H0, W0 = image0.shape[0], image0.shape[1]
     H1, W1 = image1.shape[0], image1.shape[1]
@@ -153,7 +140,7 @@ def plot_matches(img_name,
     #             (out.shape[1] - 150, out.shape[0] - 50),
     #             cv2.FONT_HERSHEY_COMPLEX, 2, (0, 0, 255), 2)
 
-    return out,points_out,count_match_mnn
+    return out, points_out, count_match_mnn, green1, green2
 
 
 def double_match(img_name,img1, img2,pts1, pts2, scores1, scores2, desc1, desc2,match_point_write_dir,radius=1, color=(0, 255, 0)):
@@ -162,11 +149,12 @@ def double_match(img_name,img1, img2,pts1, pts2, scores1, scores2, desc1, desc2,
         return
 
     # rows, cols = img1.shape
-    bf = cv2.BFMatcher(cv2.NORM_L2, crossCheck=False)
+    bf = cv2.BFMatcher(cv2.NORM_L2, crossCheck=True)
+    # bf = cv2.BFMatcher(cv2.NORM_L2, crossCheck=False)
     matches = bf.match(desc1, desc2)
 
-    out1 = plot_keypoints(img1, pts1, scores1, radius, color)
-    out2 = plot_keypoints(img2, pts2, scores2, radius, color)
+    out1, green1 = plot_keypoints(img1, pts1, scores1, radius, color)
+    out2, green2 = plot_keypoints(img2, pts2, scores2, radius, color)
 
     H0, W0 = img1.shape[0], img1.shape[1]
     H1, W1 = img2.shape[0], img2.shape[1]
@@ -217,7 +205,7 @@ def double_match(img_name,img1, img2,pts1, pts2, scores1, scores2, desc1, desc2,
     # cv2.putText(stereo_img, str(count_match), (stereo_img.shape[1] - 150, stereo_img.shape[0] - 50), cv2.FONT_HERSHEY_COMPLEX, 2, (0, 0, 255), 2)
 
 
-    return stereo_img,points_out,count_match
+    return stereo_img, points_out, count_match, green1, green2
 def post_deal(W,H,scores_map, descriptor_map,radius=2,top_k=2000, scores_th=0.2,n_limit=5000,sort=False):
     descriptor_map = torch.nn.functional.normalize(descriptor_map, p=2, dim=1)
     keypoints, descriptors, scores, _ = DKD(radius=radius, top_k=top_k,scores_th=scores_th, n_limit=n_limit).forward(scores_map, descriptor_map)
@@ -237,6 +225,8 @@ def post_deal(W,H,scores_map, descriptor_map,radius=2,top_k=2000, scores_th=0.2,
 def pre_deal_np(img,flg=False):
     img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
     image = img_rgb.transpose(2, 0, 1)[None] / 255.0
+    # img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    # image = img_rgb.transpose(2, 0, 1)[None]
     b, c, h, w = image.shape
     h_ = math.ceil(h / 8) * 8 if h % 8 != 0 else h
     w_ = math.ceil(w / 8) * 8 if w % 8 != 0 else w
@@ -258,7 +248,7 @@ def pre_deal_np(img,flg=False):
 #   kpts        - 左图特征点数目
 #   kpts_ref    - 右图特征点数目
 #   match_model - 单双向匹配模式
-def match_info(vis_img, points_out, count_match, kpts, kpts_ref, match_model):
+def match_info(vis_img, points_out, count_match, kpts, kpts_ref, match_model, green1, green2):
     count_match_img =match_model + "match:" + str(count_match)
     cv2.putText(vis_img, str(count_match_img), (20, vis_img.shape[0] - 50),
                 cv2.FONT_HERSHEY_COMPLEX, 1, (0, 0, 255), 2)  # 显示匹配数量
@@ -282,9 +272,19 @@ def match_info(vis_img, points_out, count_match, kpts, kpts_ref, match_model):
                 (vis_img.shape[1] - 100, vis_img.shape[0] - 50),
                 cv2.FONT_HERSHEY_COMPLEX, 1, (0, 0, 255), 2)  # 显示特征点数目
 
+    green_num1 = "green num :" + str(green1)
+    # green_num2 = "green num :" + str(green2)
+    cv2.putText(points_out, green_num1,
+                (20, vis_img.shape[0] - 50),
+                cv2.FONT_HERSHEY_COMPLEX, 1, (0, 0, 255), 2)  # 显示绿色点数目
+
+    # cv2.putText(points_out, green_num2,
+    #             (int(vis_img.shape[1] / 2) + 20, vis_img.shape[0] - 50),
+    #             cv2.FONT_HERSHEY_COMPLEX, 1, (0, 0, 255), 2)  # 显示绿色点数目
+
+
     print('左图的特征点数目:' + str(len(kpts)) + ' 右图的特征点数目:' + str(len(kpts_ref)) + ' 匹配数量:' + str(
         count_match))
-
 
 
 
@@ -302,7 +302,9 @@ def run(args):
     sum_net_t = []
     sum_net_matches_t = []
     sum_total_t = []  # 初始化时间列表
-    for i in range(4600, len(image_loader)):
+    # for i in range(2500, len(image_loader)):
+    for i in range(0, len(image_loader)):
+    # for i in range(4600, 4601):
         start = time.time()
         img, img_name = image_loader[i]
         img2, img2_name = image_loader2[i]
@@ -324,30 +326,36 @@ def run(args):
         desc = output1['descriptors']
         kpts_ref = output2['keypoints']
         desc_ref = output2['descriptors']
+
         scores1 = output1['scores']
         scores2 = output2['scores']
+
+
         # try:
         #     matches = mnn_mather(desc, desc_ref)
         # except:
         #     continue
         end2 = time.time()
         img_name = os.path.basename(img_name)
+
         #判断是使用单向匹配还是双向匹配
         if args.match_model == 'mnn':
             try:
                 matches = mnn_mather(desc, desc_ref)
-                vis_img, points_out, count_match = plot_matches(img_name, img, img2, kpts, kpts_ref, scores1, scores2, matches,
+                vis_img, points_out, count_match, green1, green2 = plot_matches(img_name, img, img2, kpts, kpts_ref, scores1, scores2, matches,
                                                    args.match_point_write_dir)
             except:
                 continue
 
         elif args.match_model == 'double':
-            vis_img, points_out, count_match = double_match(img_name,img, img2, kpts, kpts_ref, scores1, scores2, desc, desc_ref,args.match_point_write_dir)
+            vis_img, points_out, count_match, green1, green2 = double_match(img_name,img, img2, kpts, kpts_ref, scores1, scores2, desc, desc_ref,args.match_point_write_dir)
 
         # vis_img, points_out = plot_matches(img_name, img, img2, kpts, kpts_ref, matches, args.match_point_write_dir)
         #vis_img, points_out, count_match = double_match(img_name,img, img2, kpts, kpts_ref, scores1, scores2, desc, desc_ref,args.match_point_write_dir)
         cv2.namedWindow(args.model)
-        match_info(vis_img, points_out, count_match, kpts, kpts_ref,args.match_model)#
+        match_info(vis_img, points_out, count_match, kpts, kpts_ref,args.match_model, green1, green2)#
+
+
         cv2.imshow('points', points_out)
         cv2.imshow(args.model, vis_img)
         end = time.time()
@@ -355,6 +363,8 @@ def run(args):
         net_matches_t = end2 - start1
         total_t = end - start
         print('Use match_model:', args.match_model, 'Processed image %d (net: %.3f FPS,net+matches: %.3f FPS, total: %.3f FPS).' % (i, net_t, net_matches_t, total_t))
+
+
         if len(sum_net_t) < 102:  # 剔除最后一张和第一张  计算100张图片的平均帧率
             sum_net_t.append(net_t)
             sum_net_matches_t.append(net_matches_t)
@@ -427,6 +437,5 @@ def GetArgs():
 
 if __name__ == '__main__':
     args = GetArgs()
-    # 模型测试
     run(args)
 

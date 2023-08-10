@@ -1,0 +1,17 @@
+.vscode
+build
+*.so
+__pycache__
+.idea/
+cache/
+test.py
+*.sh
+*.pkl
+log_train/
+*.txt
+*.pth
+test_model/
+test_img/
+*.onnx
+*.log
+result/
